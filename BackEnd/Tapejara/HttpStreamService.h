@@ -1,11 +1,8 @@
 #pragma once
 // HttpStreamService.h
-// Cuida do servidor HTTP:
-// - /status: retorna JSON com estado do controle
-// - /stream: entrega MJPEG contínuo
-//
-// Observação: /stream é um loop contínuo enquanto o cliente estiver conectado.
-// Isso “ocupa” aquela conexão, o que é esperado em MJPEG.
+// - /status: JSON (agora inclui calibrated)
+// - /stream: MJPEG
+// - /calibrate?value=0|1: seta flag de calibração e persiste no SPIFFS
 
 #include <Arduino.h>
 #include <WebServer.h>
@@ -13,20 +10,25 @@
 #include "AppConfig.h"
 #include "CameraService.h"
 #include "ControlState.h"
+#include "StorageService.h"
 
 class HttpStreamService {
 public:
   // Registra rotas e inicia o servidor
-  void begin(WebServer& srv, CameraService& cam, ControlState& st) {
+  void begin(WebServer& srv, CameraService& cam, ControlState& st, StorageService& store) {
     server = &srv;
     camera = &cam;
     state  = &st;
+    storage = &store;
 
     // /status: JSON com o estado atual
     server->on("/status", HTTP_GET, [this]() { this->handleStatus(); });
 
     // /stream: MJPEG contínuo
     server->on("/stream", HTTP_GET, [this]() { this->handleStream(); });
+
+    // seta calibrado (persistente)
+    server->on("/calibrate", HTTP_GET, [this]() { this->handleCalibrate(); });
 
     server->begin();
   }
@@ -40,6 +42,7 @@ private:
   WebServer* server = nullptr;
   CameraService* camera = nullptr;
   ControlState* state = nullptr;
+  StorageService* storage = nullptr;
 
   // Responde um JSON simples para debug/monitoramento
   void handleStatus() {
@@ -48,7 +51,37 @@ private:
     json += "\"thr\":" + String(state->thr) + ",";
     json += "\"yaw\":" + String(state->yaw) + ",";
     json += "\"pit\":" + String(state->pit) + ",";
-    json += "\"rol\":" + String(state->rol);
+    json += "\"rol\":" + String(state->rol) + ",";
+    json += "\"calibrated\":" + String(storage && storage->isCalibrated() ? 1 : 0);
+    json += "}";
+    server->send(200, "application/json", json);
+  }
+
+  void handleCalibrate() {
+    server->sendHeader("Access-Control-Allow-Origin", "*");
+
+    if (!storage) {
+      server->send(500, "application/json", "{\"ok\":0,\"err\":\"storage not ready\"}");
+      return;
+    }
+
+    if (!server->hasArg("value")) {
+      server->send(400, "application/json", "{\"ok\":0,\"err\":\"missing value=0|1\"}");
+      return;
+    }
+
+    String v = server->arg("value");
+    v.trim();
+    bool flag = (v == "1" || v.equalsIgnoreCase("true"));
+
+    bool ok = storage->setCalibrated(flag);
+    if (!ok) {
+      server->send(500, "application/json", "{\"ok\":0,\"err\":\"save failed\"}");
+      return;
+    }
+
+    String json = "{\"ok\":1,\"calibrated\":";
+    json += (flag ? "1" : "0");
     json += "}";
     server->send(200, "application/json", json);
   }
