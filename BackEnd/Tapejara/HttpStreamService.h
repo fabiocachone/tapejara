@@ -1,6 +1,6 @@
 #pragma once
 // HttpStreamService.h
-// - /status: JSON (inclui calibrated e valores de calibração)
+// - /status: JSON (inclui calibrated + valores de calibração + batteryPct)
 // - /stream: MJPEG
 // - /calibrate: grava calibrated e (opcionalmente) valores de calibração em SPIFFS
 //
@@ -20,15 +20,22 @@
 #include "ControlState.h"
 #include "StorageService.h"
 #include "LedService.h"
+#include "BatteryService.h"
 
 class HttpStreamService {
 public:
-  void begin(WebServer& srv, CameraService& cam, ControlState& st, StorageService& store, LedService& ledSvc) {
+  void begin(WebServer& srv,
+             CameraService& cam,
+             ControlState& st,
+             StorageService& store,
+             LedService& ledSvc,
+             BatteryService& batSvc) {
     server = &srv;
     camera = &cam;
     state  = &st;
     storage = &store;
     led = &ledSvc;
+    battery = &batSvc;
 
     // /status: JSON com o estado atual
     server->on("/status", HTTP_GET, [this]() { this->handleStatus(); });
@@ -53,10 +60,12 @@ private:
   ControlState* state = nullptr;
   StorageService* storage = nullptr;
   LedService* led = nullptr;
+  BatteryService* battery = nullptr;
 
   // Responde um JSON simples para debug/monitoramento
   void handleStatus() {
     const CalibrationData& c = storage->getCal();
+    int bat = battery ? battery->getPercent() : -1;
 
     String json = "{";
     json += "\"ip\":\"" + WiFi.softAPIP().toString() + "\",";
@@ -69,7 +78,8 @@ private:
     json += "\"trimPitch\":" + String(c.trimPitch) + ",";
     json += "\"trimRoll\":" + String(c.trimRoll) + ",";
     json += "\"thrMin\":" + String(c.thrMin) + ",";
-    json += "\"thrMax\":" + String(c.thrMax);
+    json += "\"thrMax\":" + String(c.thrMax) + ",";
+    json += "\"batteryPct\":" + String(bat);
     json += "}";
     server->send(200, "application/json", json);
   }
@@ -101,6 +111,18 @@ private:
       return;
     }
 
+     // LOG: calibração salva (chamada via /calibrate)
+    const CalibrationData& saved = storage->getCal();
+    Serial.println("=== CALIBRATION (SAVED) ===");
+    Serial.print("calibrated: ");
+    Serial.println(saved.calibrated ? "YES" : "NO");
+    Serial.print("trimYaw: ");   Serial.println(saved.trimYaw);
+    Serial.print("trimPitch: "); Serial.println(saved.trimPitch);
+    Serial.print("trimRoll: ");  Serial.println(saved.trimRoll);
+    Serial.print("thrMin: ");    Serial.println(saved.thrMin);
+    Serial.print("thrMax: ");    Serial.println(saved.thrMax);
+    Serial.println("===========================");
+
     // LED conforme regra
     if (led) {
       if (flag) {
@@ -108,7 +130,7 @@ private:
         led->blink(3);
         led->off();
       } else {
-        led->on(); // mantém ligado até calibrar
+        led->on();
       }
     }
 
