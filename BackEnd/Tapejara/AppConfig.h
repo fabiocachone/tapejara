@@ -30,3 +30,8 @@ static const char* STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u
 
 // Adiciona o caminho do arquivo de configuração (SPIFFS)
 static const char* CONFIG_PATH = "/config.txt";
+
+// LED de status (na ESP32-CAM normalmente é o flash em GPIO 4)
+// Se a sua placa for diferente, mude aqui.
+static const uint8_t STATUS_LED_PIN = 4;
+static const bool STATUS_LED_ACTIVE_HIGH = true; // na maioria das ESP32-CAM é true
