@@ -27,3 +27,6 @@ static const char* STREAM_BOUNDARY = "\r\n--frame\r\n";
 
 // Cabeçalho de cada frame informando o Content-Length
 static const char* STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
+
+// Adiciona o caminho do arquivo de configuração (SPIFFS)
+static const char* CONFIG_PATH = "/config.txt";
