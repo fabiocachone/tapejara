@@ -1,72 +1,92 @@
-# Tapejara - BackEnd
+# Tapejara - BackEnd (ESP32-CAM Firmware)
 
 autor: Fabio Cachone
 
 Descrição
---------
-BackEnd responsável por orquestrar controle e telemetria do drone Tapejara e por integrar o stream de vídeo da câmera ESP32-CAM ao aplicativo móvel.
+---------
+Este diretório contém o firmware que roda diretamente na ESP32-CAM e implementa vídeo, telemetria, controle e persistência de calibração para o projeto Tapejara.
 
-Principais responsabilidades
-- Encaminhar comandos de controle do app móvel para o controlador do drone.
-- Receber e disponibilizar telemetria (altitude, velocidade, bateria, GPS).
-- Integrar e proxy do feed de vídeo da ESP32-CAM para o FrontEnd.
-- Autenticação básica e gerenciamento de sessão com o app móvel.
+Responsabilidades principais do firmware
+- Expor stream MJPEG via HTTP (`/stream`).
+- Expor estado/telemetria via HTTP (`/status`).
+- Receber comandos de controle via UDP (`porta 4210`).
+- Persistir e recuperar configuração de calibração em SPIFFS (`/config.txt`).
 
-Integração com ESP32-CAM
-- Streams suportados (dependendo do firmware da ESP32-CAM):
-  - MJPEG via HTTP (ex.: http://esp32-cam-ip:81/stream)
-  - JPEG snapshots via HTTP
-  - RTSP (se o firmware suportar)
-- O BackEnd deve prover um endpoint que o FrontEnd consome para vídeo em tempo real (proxy HTTP/MJPEG ou reencaminhamento RTSP/WebRTC).
+Arquivos chave
+- [Tapejara/Tapejara.ino](Tapejara/Tapejara.ino) — sketch principal (setup + loop).
+- [Tapejara/AppConfig.h](Tapejara/AppConfig.h) — constantes (SSID, senha, IP do AP, portas, paths).
+- [Tapejara/CameraService.h](Tapejara/CameraService.h) — inicialização e captura de frames JPEG.
+- [Tapejara/WifiApService.h](Tapejara/WifiApService.h) — cria o Access Point com IP fixo.
+- [Tapejara/HttpStreamService.h](Tapejara/HttpStreamService.h) — implementa `/stream`, `/status`, `/calibrate`.
+- [Tapejara/UdpControlService.h](Tapejara/UdpControlService.h) — task UDP que atualiza `ControlState`.
+- [Tapejara/StorageService.h](Tapejara/StorageService.h) — SPIFFS e persistência de calibração (`/config.txt`).
+- [Tapejara/LedService.h](Tapejara/LedService.h) — gerencia LED de status (pisca / ligado).
+- [Tapejara/BatteryService.h](Tapejara/BatteryService.h) — placeholder para % de bateria.
 
-Endpoints sugeridos
-- POST /api/command          — enviar comando de voo (takeoff, land, move, etc.)
-- GET  /api/telemetry       — telemetria atual (JSON)
-- WS   /api/telemetry/ws    — telemetria em tempo real via WebSocket
-- GET  /api/camera/stream   — proxy para o stream da ESP32-CAM
-- GET  /api/camera/snapshot — snapshot JPEG
+Fluxo de uso (passo a passo)
+1. Gravar o firmware na ESP32-CAM (ver seção "Como compilar e subir").
+2. Ao ligar, a ESP32-CAM cria um Access Point `tapejara01` (senha em `AppConfig.h`).
+3. Conecte o celular ou PC no AP `tapejara01` e acesse o IP fixo `http://192.168.4.1`.
+4. Para vídeo em tempo real, o app faz `HTTP GET http://192.168.4.1/stream` (MJPEG).
+5. Para checar estado/telemetria: `HTTP GET http://192.168.4.1/status` (JSON).
+6. Para ajustar/calibrar: `HTTP GET http://192.168.4.1/calibrate?value=1&...`.
+7. Para enviar comandos de controle em tempo real, envie UDP para `192.168.4.1:4210` com o payload `C,thr,yaw,pit,rol`.
 
-Requisitos iniciais
-- Node.js (ex.: 16+), ou stack escolhida (Python/Go/etc.)
-- Conectividade entre BackEnd e ESP32-CAM (mesma rede ou túnel)
-- Configuração de IP/porta da ESP32-CAM em variáveis de ambiente
+Protocolos e formatos
+- Vídeo: HTTP MJPEG multipart (`multipart/x-mixed-replace;boundary=frame`).
+   - Endpoint: `/stream`
+   - Implementação: `HttpStreamService` captura JPEGs via `CameraService` e escreve partes com boundary `--frame`.
+- Telemetria / Status: HTTP JSON.
+   - Endpoint: `/status`.
+   - Conteúdo: IP, `thr`, `yaw`, `pit`, `rol`, flags de calibração, trims, `thrMin`/`thrMax`, `batteryPct`.
+- Calibração: HTTP query string para `/calibrate`.
+   - Parâmetro obrigatório: `value=0|1`.
+   - Opcionais: `trimYaw`, `trimPitch`, `trimRoll`, `thrMin`, `thrMax`.
+   - Persiste em SPIFFS (`StorageService`).
+- Controle: UDP datagram.
+   - Porta: `4210` (ver `AppConfig.h`).
+   - Formato: ASCII `C,thr,yaw,pit,rol` (ex.: `C,100,-20,0,15`).
+   - Parse: `UdpControlService` faz `sscanf` e aplica `constrain` antes de atualizar `ControlState`.
 
-Exemplo de configuração (.env)
-- ESP32_CAM_URL=http://192.168.4.1:81/stream
-- TELEMETRY_WS_PORT=8081
-- API_PORT=3000
+Como compilar e subir o firmware
+- Arduino IDE (recomendado para iniciantes):
+   1. Abra `BackEnd/Tapejara/Tapejara.ino` no Arduino IDE.
+   2. Selecione a placa `AI Thinker ESP32-CAM` (ou a placa correspondente).
+   3. Configure a porta serial correta com o conversor FTDI/USB-to-Serial.
+   4. Pressione `Upload`.
 
-Como começar (exemplo Node.js/Express genérico)
-1. Instalar dependências:
-   - npm install
-2. Configurar variáveis de ambiente (ver .env.example)
-3. Rodar em desenvolvimento:
-   - npm run dev
-4. Testar endpoints:
-   - Abrir [http://localhost:3000/api/camera/stream](http://localhost:3000/api/camera/stream) (proxy para ESP32-CAM)
-   - Conectar WebSocket em ws://localhost:8081
+- PlatformIO (avançado):
+   1. Configure um `platformio.ini` com ambiente ESP32 (use o board correspondente ao seu módulo).
+   2. Execute `platformio run --target upload`.
 
-Estrutura sugerida
-- src/
-  - controllers/   — handlers de API (camera, commands, telemetry)
-  - services/      — integração com ESP32-CAM, controlador do drone, telemetria
-  - routes/        — definição de rotas REST/WS
-  - utils/         — helpers, validação e configuração
-  - config/        — leitura de .env e constantes
+Observações antes de gravar
+- Confirme a pinagem em `CameraService.h` se sua placa for diferente do AI-Thinker.
+- Ajuste `STATUS_LED_PIN` e `STATUS_LED_ACTIVE_HIGH` em `AppConfig.h` se necessário.
 
-Boas práticas
-- Validar e sanitizar comandos recebidos do FrontEnd.
-- Implementar reconexão automática com a ESP32-CAM.
-- Registrar erros e eventos críticos (logs).
-- Isolar o proxy de vídeo para reduzir latência e uso de CPU.
+Exemplos práticos de teste
+- Abrir stream em navegador / WebView:
+   - http://192.168.4.1/stream
 
-Referências no workspace
-- Frontend com a interface: [FrontEnd/README.md](FrontEnd/README.md)
-- Telemetria e armazenamento: [Telemetria/](Telemetria/)
+- Ver status via curl:
+   - `curl http://192.168.4.1/status`
 
-Contribuição
-- Use branches por feature e abra PRs.
-- Documente mudanças na API e atualize este README.
+- Ativar calibragem e ajustar trims:
+   - `http://192.168.4.1/calibrate?value=1&trimYaw=5&trimPitch=-2`
 
-Licença
-- Defina a licença do projeto no arquivo raiz (README.md ou LICENSE).
+- Enviar comando UDP (Linux/macOS com `ncat`):
+   - `echo -n "C,100,0,0,0" | ncat -u 192.168.4.1 4210`
+
+- Enviar comando UDP (PowerShell no Windows):
+   - `$udp = New-Object System.Net.Sockets.UdpClient; $b=[System.Text.Encoding]::ASCII.GetBytes("C,100,0,0,0"); $udp.Send($b,$b.Length,"192.168.4.1",4210)`
+
+Fluxograma (visão geral)
+
+   [App/Navegador]
+            |
+            | conecta Wi‑Fi AP `tapejara01` -> IP `192.168.4.1`
+            v
+   [ESP32-CAM]
+      |- HTTP GET /stream  --> MJPEG (CameraService -> HttpStreamService)
+      |- HTTP GET /status  --> JSON (HttpStreamService -> Storage/Battery)
+      |- HTTP GET /calibrate?value=... --> grava em SPIFFS (StorageService)
+      |- UDP recv on 4210  --> atualiza `ControlState` (UdpControlService)
