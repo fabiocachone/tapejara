@@ -1,0 +1,11 @@
+# Android / Gradle / IntelliJ (em qualquer subpasta)
+**/.gradle/
+**/build/
+**/local.properties
+**/.idea/
+**/*.iml
+**/.kotlin/
+**/.cxx/
+**/.externalNativeBuild/
+**/captures/
+.DS_Store
