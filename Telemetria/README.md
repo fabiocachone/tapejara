@@ -1,78 +1,178 @@
-# Tapejara - Telemetria dos Motores
+ Sistema de Telemetria para Drone com ESP32
 
-autor: Nicolas Benitez
+ #Descrição:
+Este projeto implementa um sistema de telemetria para drone utilizando um ESP32 com FreeRTOS, responsável por:
 
-Descrição
---------
-README inicial para a camada de telemetria responsável por coletar, processar e expor dados dos motores do drone Tapejara.
+- Transmitir dados de orientação (Pitch, Roll, Yaw) via MPU6050
 
-Responsabilidades principais
-- Coletar métricas dos drivers/controladores dos motores (ESCs).
-- Processar e normalizar dados (filtragem, média, detecção de anomalias).
-- Disponibilizar telemetria em tempo real para o BackEnd/FrontEnd (API/WS/MQTT).
-- Persistir dados históricos para diagnóstico (opcional).
+- Monitorar tensão da bateria
 
-Métricas sugeridas
-- RPM (rotações por minuto) por motor
-- Corrente (A) por motor
-- Tensão (V) do supply
-- Temperatura (°C) do motor/ESC
-- Sinal PWM/ESC (ms ou duty)
-- Estado (ativo, falha, limite térmico)
+- Monitorar corrente da bateria
 
-Formato de dados (exemplo JSON)
-```json
-{
-  "timestamp": "2025-11-24T12:34:56.789Z",
-  "motors": [
-    { "id": 1, "rpm": 4200, "current": 12.3, "voltage": 11.7, "temp": 58.2, "pwm": 1500, "status": "ok" },
-    { "id": 2, "rpm": 4185, "current": 12.1, "voltage": 11.7, "temp": 57.9, "pwm": 1500, "status": "ok" }
-  ]
-}
-```
+- Enviar dados em tempo real via Wi-Fi + MQTT
 
-Interfaces recomendadas
-- REST GET /telemetry/latest — último snapshot
-- WS /telemetry/ws — stream em tempo real (preferível para baixa latência)
-- MQTT topic tapejara/telemetry/motors — integração com brokers
-- Endpoint para histórico: GET /telemetry?from=...&to=...
+O sistema é dividido em tarefas independentes rodando em núcleos diferentes do ESP32, garantindo melhor desempenho e organização do firmware.
 
-Estrutura sugerida
-- src/
-  - collectors/    — drivers e adaptadores (CAN, serial, I2C, ADC)
-  - processors/    — agregação, filtros, detecção de falhas
-  - api/           — REST/WS/MQTT exposição
-  - storage/       — persistência (InfluxDB, Timescale, ou arquivos)
-  - config/        — leitura de variáveis de ambiente
-  - tests/         — testes unitários e de integração
+ #Arquitetura do Sistema
 
-Configuração (.env exemplo)
-- TELEMETRY_PORT=4000
-- TELEMETRY_WS_PORT=4001
-- STORAGE_URL=http://localhost:8086
-- COLLECTOR_INTERFACE=/dev/ttyUSB0
-- SAMPLE_RATE_HZ=10
+O firmware utiliza FreeRTOS com duas tarefas principais:
 
-Como começar (exemplo genérico Node.js)
-1. Instalar dependências:
-   - npm install
-2. Configurar variáveis (criar .env a partir de .env.example)
-3. Rodar em desenvolvimento:
-   - npm run dev
-4. Testar:
-   - GET http://localhost:4000/telemetry/latest
-   - conectar WebSocket em ws://localhost:4001
+🔹 Core 1 – TaskControle (Prioridade 2)
 
-Boas práticas
-- Validar e limitar taxa de amostragem para não saturar canal.
-- Implementar buffer e reconexão para perda temporária de coletor.
-- Alarmes para limites críticos (corrente/temperatura).
-- Sincronizar timestamps (NTP) para correlação com logs de voo.
+Responsável por:
 
-Contribuição
-- Use branches por feature e PRs revisados.
-- Documente mudanças no protocolo de telemetria.
-- Adicione testes para coleta e processamento de métricas.
+Inicialização do MPU6050
 
-Licença
-- Defina a licença do projeto no arquivo raiz (LICENSE).
+Leitura contínua dos ângulos
+
+Futuramente: controle de voo (PID, motores, etc.)
+
+🔹 Core 0 – TaskTelemetria (Prioridade 1)
+
+Responsável por:
+
+Conexão Wi-Fi
+
+Conexão MQTT
+
+Leitura de tensão e corrente da bateria
+
+Publicação dos dados via MQTT
+
+# Dados Transmitidos
+
+Os seguintes tópicos MQTT são publicados:
+
+Variável	Tópico MQTT
+Pitch	sensor/mpu/pitch
+Roll	sensor/mpu/roll
+Yaw	sensor/mpu/yaw
+Corrente da bateria	bateria/corrente
+Tensão da bateria	bateria/tensão
+
+# Hardware Utilizado
+
+ESP32
+
+MPU6050 (I2C – GPIO 21 SDA / GPIO 22 SCL)
+
+Amplificador diferencial (ganho = 62)
+
+Resistor shunt (1Ω)
+
+Divisor de tensão (fator = 2)
+
+ADC GPIO 34 → Tensão
+
+ADC GPIO 35 → Corrente
+
+# Parâmetros Importantes
+ADC
+
+Resolução configurada para 11 bits
+
+Média de 20 amostras para redução de ruído
+
+Cálculo da tensão
+
+Utiliza polinômio de 3º grau (forma de Horner):
+
+V = (((a*x + b)*x + c)*x + d) * divisao_tensao
+
+Cálculo da corrente
+I = (V_calibrado / ganho * divisao_tensao) / rshunt
+
+# Configuração de Rede
+Wi-Fi
+const char* ssid = "SEU_WIFI";
+const char* password = "SUA_SENHA";
+
+MQTT
+const char* mqtt_server = "IP_DO_SERVIDOR";
+const int mqtt_port = 1883;
+
+# Estrutura de Tarefas (FreeRTOS)
+xTaskCreatePinnedToCore(TaskControle, "Controle", 4096, NULL, 2, NULL, 1);
+xTaskCreatePinnedToCore(TaskTelemetria, "Telemetria", 8192, NULL, 1, NULL, 0);
+
+Task	Core	Função
+Controle	1	Leitura MPU e futuro controle
+Telemetria	0	Wi-Fi, MQTT e bateria
+
+# Fluxo de Funcionamento
+
+ESP32 inicia
+
+Tarefas são criadas
+
+Core 1 inicializa MPU
+
+Core 0 conecta ao Wi-Fi
+
+Core 0 conecta ao MQTT
+
+Sistema começa a transmitir dados continuamente
+
+# Taxas de Atualização
+
+MPU6050 → ~1ms delay
+
+Telemetria → 30ms delay (~33Hz)
+
+# Futuras Implementações
+
+Implementação de PID para controle de voo
+
+Filtro complementar/Kalman para melhor estimativa de atitude
+
+Watchdog para segurança
+
+Detecção de bateria crítica
+
+Buffer circular para logs
+
+Criptografia MQTT (TLS)
+
+# Dependências
+
+MPU6050_tockn
+
+WiFi.h
+
+PubSubClient
+
+Wire.h
+
+FreeRTOS (nativo do ESP32)
+
+# Exemplo de Monitoramento
+
+Você pode visualizar os dados usando:
+
+Node-RED
+
+MQTT Explorer
+
+Mosquitto + Terminal
+
+Dashboard Web personalizado
+
+Exemplo via terminal:
+
+mosquitto_sub -h 192.168.X.X -t sensor/mpu/pitch
+
+# Objetivo do Projeto
+
+Este sistema faz parte do desenvolvimento de um drone com telemetria embarcada, permitindo:
+
+Monitoramento remoto em tempo real
+
+Análise de estabilidade
+
+Avaliação do consumo energético
+
+Base para desenvolvimento de controle autônomo
+
+# Autor: Nicolas benitez Lopes
+
+Projeto desenvolvido para aplicação em sistemas embarcados e controle de voo com ESP32.
