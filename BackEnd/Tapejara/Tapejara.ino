@@ -1,139 +1,236 @@
-// Tapejara.ino
-//
-// DIAGRAMA DE FLUXO (ATUALIZE SE O FLUXO MUDAR)
-//
-//   [Android App] --(Wi-Fi conecta no AP "tapejara01")--> [ESP32-CAM AP: 192.168.4.1]
-//        |                                                        |
-//        |-- HTTP GET http://192.168.4.1/stream   (MJPEG vídeo) -->|
-//        |-- HTTP GET http://192.168.4.1/status   (JSON debug) --> |--> inclui calibrated + valores de calibração + batteryPct
-//        |-- HTTP GET http://192.168.4.1/calibrate?value=0|1&... ->|--> grava em SPIFFS (/config.txt) e controla LED
-//        |
-//        |-- UDP 192.168.4.1:4210  "C,thr,yaw,pit,rol" ----------> |--> [ControlState: thr/yaw/pit/rol]
-//                                                                 |
-//                                                                 +--> (futuro) Mixer/ESC/PWM etc.
-//                                                                 +--> LED: se não calibrado fica ligado; se calibrado pisca 3x no boot/ao calibrar
-//
-// RESPONSABILIDADES (módulos)
-// - CameraService: inicialização + captura de frames da câmera
-// - WifiApService: criação do hotspot (AP) com IP fixo
-// - HttpStreamService: rotas HTTP (/status, /stream, /calibrate)
-// - UdpControlService: recepção UDP e parsing dos comandos
-// - StorageService: SPIFFS + persistência (/config.txt) de calibrated + valores de calibração
-// - LedService: LED de estado (não calibrado ligado; calibrado pisca 3x)
-// - BatteryService: bateria (por enquanto hard-coded) exposta no /status e logada no Serial
-// - ControlState: estado compartilhado thr/yaw/pit/rol
-// - AppConfig: constantes (SSID, senha, portas, headers MJPEG, CONFIG_PATH, LED pin)
+// Tapejara.ino - Versão Simplificada com FreeRTOS
+// Conexão WiFi à rede CACHONE + Stream MJPEG
 
 #include <WiFi.h>
-#include <WiFiUdp.h>
 #include <WebServer.h>
 #include "esp_camera.h"
 
-// Configurações e módulos do projeto
-#include "AppConfig.h"
-#include "ControlState.h"
-#include "CameraService.h"
-#include "WifiApService.h"
-#include "HttpStreamService.h"
-#include "UdpControlService.h"
-#include "StorageService.h"
-#include "LedService.h"
-#include "BatteryService.h"
+// ===== CONFIGURAÇÕES =====
+const char* WIFI_SSID = "CACHONE";
+const char* WIFI_PASS = "f22485910";
 
-// Servidor HTTP que vai servir /status e /stream
+const char* STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=frame";
+const char* STREAM_BOUNDARY = "\r\n--frame\r\n";
+const char* STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
+
+const uint8_t STATUS_LED_PIN = 4;
+
+// Pinos do modelo AI Thinker (ESP32-CAM)
+#define PWDN_GPIO_NUM     32
+#define RESET_GPIO_NUM    -1
+#define XCLK_GPIO_NUM      0
+#define SIOD_GPIO_NUM     26
+#define SIOC_GPIO_NUM     27
+
+#define Y9_GPIO_NUM       35
+#define Y8_GPIO_NUM       34
+#define Y7_GPIO_NUM       39
+#define Y6_GPIO_NUM       36
+#define Y5_GPIO_NUM       21
+#define Y4_GPIO_NUM       19
+#define Y3_GPIO_NUM       18
+#define Y2_GPIO_NUM        5
+#define VSYNC_GPIO_NUM    25
+#define HREF_GPIO_NUM     23
+#define PCLK_GPIO_NUM     22
+
+// ===== VARIÁVEIS GLOBAIS =====
 WebServer server(80);
+bool cameraOk = false;
+bool wifiOk = false;
 
-// Estado compartilhado dos controles (throttle/yaw/pitch/roll)
-ControlState control;
-
-// Serviços separados por responsabilidade
-CameraService camera;       // Inicializa e captura frames da câmera
-WifiApService wifiAp;       // Cria hotspot (AP) e IP fixo
-StorageService storage;     // SPIFFS + config persistente
-LedService led;             // LED de estado
-BatteryService battery;     // Bateria (hard-coded por enquanto)
-HttpStreamService http;     // Rotas HTTP e stream MJPEG
-UdpControlService udpCtrl;  // Recebe comandos via UDP e atualiza control
-
-static unsigned long lastBatteryLogMs = 0;
-
-void setup() {
-  Serial.begin(115200);
-
-  led.begin();
-  battery.begin();
-
-  // Valor hard-coded por enquanto
-  battery.setHardcoded(73);
-
-  // 1) Inicializa câmera
-  if (!camera.begin()) {
-    Serial.println("Falha ao iniciar camera");
-    while (true) delay(1000);
+// ===== INICIALIZAÇÃO DA CÂMERA =====
+bool initCamera() {
+  camera_config_t config;
+  
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer   = LEDC_TIMER_0;
+  
+  config.pin_d0       = Y2_GPIO_NUM;
+  config.pin_d1       = Y3_GPIO_NUM;
+  config.pin_d2       = Y4_GPIO_NUM;
+  config.pin_d3       = Y5_GPIO_NUM;
+  config.pin_d4       = Y6_GPIO_NUM;
+  config.pin_d5       = Y7_GPIO_NUM;
+  config.pin_d6       = Y8_GPIO_NUM;
+  config.pin_d7       = Y9_GPIO_NUM;
+  
+  config.pin_xclk     = XCLK_GPIO_NUM;
+  config.pin_pclk     = PCLK_GPIO_NUM;
+  config.pin_vsync    = VSYNC_GPIO_NUM;
+  config.pin_href     = HREF_GPIO_NUM;
+  
+  config.pin_sccb_sda = SIOD_GPIO_NUM;
+  config.pin_sccb_scl = SIOC_GPIO_NUM;
+  
+  config.pin_pwdn     = PWDN_GPIO_NUM;
+  config.pin_reset    = RESET_GPIO_NUM;
+  
+  config.xclk_freq_hz = 20000000;
+  config.pixel_format = PIXFORMAT_JPEG;
+  config.frame_size   = FRAMESIZE_QVGA;
+  config.jpeg_quality = 12;
+  config.fb_count     = 2;
+  
+  if (esp_camera_init(&config) != ESP_OK) {
+    return false;
   }
-
-  // 2) Monta SPIFFS e carrega/cria config
-  if (!storage.begin(true)) {
-    Serial.println("Falha ao montar SPIFFS");
-    while (true) delay(1000);
+  
+  // Configura rotação 90 graus no sentido horário
+  sensor_t * s = esp_camera_sensor_get();
+  if (s != NULL) {
+    s->set_vflip(s, 1);      // Flip vertical
+    s->set_hmirror(s, 1);    // Mirror horizontal
   }
-
-   // LOG: calibração carregada da flash (SPIFFS)
-  const CalibrationData& c = storage.getCal();
-  Serial.println("=== CALIBRATION (BOOT) ===");
-  Serial.print("calibrated: ");
-  Serial.println(c.calibrated ? "YES" : "NO");
-  Serial.print("trimYaw: ");   Serial.println(c.trimYaw);
-  Serial.print("trimPitch: "); Serial.println(c.trimPitch);
-  Serial.print("trimRoll: ");  Serial.println(c.trimRoll);
-  Serial.print("thrMin: ");    Serial.println(c.thrMin);
-  Serial.print("thrMax: ");    Serial.println(c.thrMax);
-  Serial.println("==========================");
-
-  // 3) LED conforme estado persistido
-  if (c.calibrated) {
-    led.off();
-    led.blink(3);
-    led.off();
-  } else {
-    // led.on(); // fica ligado até calibrar
-    led.off();
-    led.blink(7);
-    led.off();
-  }
-
-  // 4) Sobe Wi-Fi em modo Access Point (hotspot)
-  wifiAp.begin();
-
-  // 5) Sobe servidor HTTP com rotas /status /stream /calibrate
-  http.begin(server, camera, control, storage, led, battery);
-
-  // 6) Sobe receptor UDP (em task separada) para ler comandos do app
-  udpCtrl.begin(control);
-
-  // Logs para debug no Serial Monitor
-  Serial.print("AP IP: ");
-  Serial.println(WiFi.softAPIP());
-  Serial.println("Rotas: /status, /stream, /calibrate");
-
-  Serial.print("Battery (hard-coded): ");
-  Serial.print(battery.getPercent());
-  Serial.println("%");
+  
+  return true;
 }
 
-void loop() {
-  // Mantém o servidor HTTP respondendo requisições
-  http.handle();
+// ===== SETUP WIFI =====
+void setupWiFi() {
+  Serial.println();
+  Serial.print("Conectando em ");
+  Serial.println(WIFI_SSID);
 
-  // Log periódico da bateria no Serial (simula valor "dinâmico" por enquanto)
-  const unsigned long now = millis();
-  if (now - lastBatteryLogMs >= 5000) {
-    lastBatteryLogMs = now;
-    Serial.print("Battery: ");
-    Serial.print(battery.getPercent());
-    Serial.println("%");
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  
+  int tentativas = 0;
+  while (WiFi.status() != WL_CONNECTED && tentativas < 20) {
+    delay(500);
+    Serial.print(".");
+    tentativas++;
   }
 
-  // Respiro do loop
-  delay(1);
+  Serial.println();
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("✓ WiFi conectado!");
+    Serial.print("IP: ");
+    Serial.println(WiFi.localIP());
+    wifiOk = true;
+    digitalWrite(STATUS_LED_PIN, LOW);
+  } else {
+    Serial.println("✗ Falha ao conectar WiFi");
+    wifiOk = false;
+    digitalWrite(STATUS_LED_PIN, LOW);
+  }
+}
+
+// ===== TASK WIFI (Núcleo 0 - Monitora conexão) =====
+void TaskWiFi(void *pvParameters) {
+  vTaskDelay(5000 / portTICK_PERIOD_MS);  // Aguarda inicialização
+  
+  for (;;) {
+    // Verifica conexão WiFi a cada 10s
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("WiFi desconectado, reconectando...");
+      setupWiFi();
+    }
+    
+    vTaskDelay(10000 / portTICK_PERIOD_MS);
+  }
+}
+
+// ===== HANDLERS HTTP =====
+void handleRoot() {
+  String html = R"(
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Tapejara Stream</title>
+  <meta charset="UTF-8">
+</head>
+<body>
+  <h1>Tapejara - Video Stream</h1>
+  <p>ESP32-CAM conectado à rede CACHONE</p>
+  <p><strong>IP: )";
+  html += WiFi.localIP().toString();
+  html += R"(</strong></p>
+  <hr>
+  <h2>Stream MJPEG:</h2>
+  <img src="/stream" style="width:100%; max-width:600px;">
+</body>
+</html>
+  )";
+  server.send(200, "text/html", html);
+}
+
+void handleStream() {
+  if (!cameraOk) {
+    server.send(500, "text/plain", "Camera not initialized");
+    return;
+  }
+  
+  WiFiClient client = server.client();
+  
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendContent("HTTP/1.1 200 OK\r\n");
+  server.sendContent("Content-Type: ");
+  server.sendContent(STREAM_CONTENT_TYPE);
+  server.sendContent("\r\n\r\n");
+  
+  // Stream loop
+  while (client.connected()) {
+    camera_fb_t* fb = esp_camera_fb_get();
+    if (!fb) continue;
+    
+    client.write((const uint8_t*)STREAM_BOUNDARY, strlen(STREAM_BOUNDARY));
+    
+    char part[64];
+    int hlen = snprintf(part, sizeof(part), STREAM_PART, fb->len);
+    client.write((const uint8_t*)part, hlen);
+    
+    client.write(fb->buf, fb->len);
+    esp_camera_fb_return(fb);
+    
+    vTaskDelay(5 / portTICK_PERIOD_MS);
+  }
+}
+
+void handleNotFound() {
+  server.send(404, "text/plain", "Not Found");
+}
+
+// ===== SETUP =====
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  
+  Serial.println("\n\n=== TAPEJARA BOOT ===");
+  
+  // LED
+  pinMode(STATUS_LED_PIN, OUTPUT);
+  digitalWrite(STATUS_LED_PIN, LOW);
+  
+  // Câmera
+  Serial.println("Inicializando câmera...");
+  if (initCamera()) {
+    Serial.println("✓ Câmera iniciada");
+    cameraOk = true;
+  } else {
+    Serial.println("✗ Falha ao inicializar câmera");
+    cameraOk = false;
+  }
+  
+  // WiFi (no setup, antes de WebServer)
+  setupWiFi();
+  
+  // HTTP
+  server.on("/", handleRoot);
+  server.on("/stream", handleStream);
+  server.onNotFound(handleNotFound);
+  server.begin();
+  
+  Serial.println("✓ Servidor HTTP iniciado (porta 80)");
+  
+  // Criar task para monitorar WiFi (Núcleo 0)
+  xTaskCreatePinnedToCore(TaskWiFi, "WiFi_Monitor", 4096, NULL, 1, NULL, 0);
+  
+  Serial.println("=== BOOT COMPLETO ===\n");
+}
+
+// ===== LOOP PRINCIPAL =====
+void loop() {
+  server.handleClient();
+  vTaskDelay(1 / portTICK_PERIOD_MS);
 }
