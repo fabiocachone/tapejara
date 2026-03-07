@@ -107,8 +107,19 @@ void setupWiFi() {
     Serial.println("✓ WiFi conectado!");
     Serial.print("IP: ");
     Serial.println(WiFi.localIP());
-    wifiOk = true;
+    
+    // Pisca LED uma vez
+    digitalWrite(STATUS_LED_PIN, HIGH);
+    delay(200);
     digitalWrite(STATUS_LED_PIN, LOW);
+    delay(200);
+    
+    // Imprime link da stream
+    Serial.print("Stream: http://");
+    Serial.print(WiFi.localIP().toString());
+    Serial.println("/stream");
+    
+    wifiOk = true;
   } else {
     Serial.println("✗ Falha ao conectar WiFi");
     wifiOk = false;
