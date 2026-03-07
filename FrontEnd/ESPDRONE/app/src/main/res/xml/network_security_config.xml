@@ -1,7 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
+    <!-- Permite cleartext para toda a rede local e/ou http em geral -->
+    <base-config cleartextTrafficPermitted="true" />
+
+    <!-- configuração específica (opcional) se desejar restringir a faixa) -->
+    <!--
     <domain-config cleartextTrafficPermitted="true">
-        <!-- IP do ESP32; ajuste se usar outro -->
-        <domain includeSubdomains="true">192.168.4.1</domain>
+        <domain includeSubdomains="true">192.168.0.0/16</domain>
     </domain-config>
+    -->
 </network-security-config>
