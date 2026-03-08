@@ -66,9 +66,9 @@ bool initCamera() {
   config.pin_pwdn     = PWDN_GPIO_NUM;
   config.pin_reset    = RESET_GPIO_NUM;
   
-  config.xclk_freq_hz = 20000000;
+  config.xclk_freq_hz = 24000000;
   config.pixel_format = PIXFORMAT_JPEG;
-  config.frame_size   = FRAMESIZE_QVGA;
+  config.frame_size   = FRAMESIZE_UXGA;
   config.jpeg_quality = 12;
   config.fb_count     = 2;
   
@@ -80,7 +80,12 @@ bool initCamera() {
   sensor_t * s = esp_camera_sensor_get();
   if (s != NULL) {
     s->set_vflip(s, 1);      // Flip vertical
-    s->set_hmirror(s, 1);    // Mirror horizontal
+    s->set_hmirror(s, 0);    // Mirror horizontal
+    s->set_brightness(s, 0); // Brilho neutro
+    s->set_contrast(s, 2);   // Contraste máximo
+    s->set_saturation(s, 2); // Saturação máxima
+    s->set_sharpness(s, 2);  // Nitidez máxima
+    s->set_gainceiling(s, GAINCEILING_16X); // Ganho máximo para baixa luz
   }
   
   return true;
@@ -148,18 +153,13 @@ void handleRoot() {
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Tapejara Stream</title>
-  <meta charset="UTF-8">
+  <style>
+    body { margin: 0; padding: 0; display: flex; justify-content: center; align-items: center; height: 100vh; background: #000; }
+    img { transform: rotate(270deg); width: 100%; height: 100%; object-fit: contain; }
+  </style>
 </head>
 <body>
-  <h1>Tapejara - Video Stream</h1>
-  <p>ESP32-CAM conectado à rede CACHONE</p>
-  <p><strong>IP: )";
-  html += WiFi.localIP().toString();
-  html += R"(</strong></p>
-  <hr>
-  <h2>Stream MJPEG:</h2>
-  <img src="/stream" style="width:100%; max-width:600px;">
+  <img src="/stream">
 </body>
 </html>
   )";
