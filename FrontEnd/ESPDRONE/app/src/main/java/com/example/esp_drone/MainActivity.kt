@@ -5,8 +5,9 @@ import android.net.Uri
 import android.os.Bundle
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.webkit.WebView
+import android.webkit.WebSettings
 import android.widget.Toast
-import android.widget.VideoView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
@@ -117,6 +118,9 @@ fun ControlScreen(onOpenSettings: () -> Unit) {
     val state = remember { mutableStateOf(ControlState()) }
     var sending by remember { mutableStateOf(false) }
     var battery by remember { mutableFloatStateOf(0.82f) }
+    val ctx = LocalContext.current
+    val prefs = remember { ctx.getSharedPreferences("tapejara_prefs", MODE_PRIVATE) }
+    val streamUrl = remember { mutableStateOf(prefs.getString("stream_url", "http://192.168.15.37/stream") ?: "http://192.168.15.37/stream") }
 
     DisposableEffect(Unit) {
         client.open(); sending = true
@@ -130,7 +134,7 @@ fun ControlScreen(onOpenSettings: () -> Unit) {
 
         // >>> FUNDO COM VÍDEO (URL RAW DO GITHUB)
         VideoBackground(
-            url = "https://raw.githubusercontent.com/fabiocachone/tapejara/main/tapejara_demo_flight_5s.mp4"
+            url = streamUrl.value
         )
 
         Text(
@@ -191,34 +195,32 @@ private fun VideoBackground(url: String) {
         AndroidView(
             modifier = Modifier.matchParentSize(),
             factory = { context ->
-                VideoView(context).apply {
+                WebView(context).apply {
                     layoutParams = ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT
                     )
 
-                    // Marca a URL no tag, para evitar re-set desnecessário
-                    tag = url
-                    setVideoURI(Uri.parse(url))
-
-                    setOnPreparedListener { mp ->
-                        mp.isLooping = true
-                        start()
+                    settings.apply {
+                        javaScriptEnabled = true
+                        domStorageEnabled = true
+                        databaseEnabled = true
+                        loadWithOverviewMode = true
+                        useWideViewPort = true
+                        setSupportZoom(false)
+                        builtInZoomControls = false
+                        displayZoomControls = false
+                        // permitir conteúdo claro/http mesmo em configurações mais restritas
+                        mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                     }
 
-                    // Se der erro, não trava o app (fica só o fundo escuro)
-                    setOnErrorListener { _, _, _ ->
-                        false
-                    }
+                    // Carrega a URL do stream
+                    loadUrl(url)
                 }
             },
-            update = { vv ->
-                val current = vv.tag as? String
-                if (current != url) {
-                    vv.tag = url
-                    vv.setVideoURI(Uri.parse(url))
-                    vv.start()
-                }
+            update = { webView ->
+                // Atualiza a URL se mudou
+                webView.loadUrl(url)
             }
         )
 
@@ -284,9 +286,10 @@ fun SettingsScreen(onBack: () -> Unit) {
     var pidAltRateI by remember { mutableStateOf(getF("pid_alt_rate_i", "0.5")) }
     var pidAltRateD by remember { mutableStateOf(getF("pid_alt_rate_d", "0.01")) }
 
-    // Wi-Fi
+    // Wi-Fi + Stream URL
     var wifiSsid by remember { mutableStateOf(prefs.getString("wifi_ssid", "") ?: "") }
     var wifiPass by remember { mutableStateOf(prefs.getString("wifi_pass", "") ?: "") }
+    var streamUrl by remember { mutableStateOf(prefs.getString("stream_url", "http://192.168.15.37/stream") ?: "http://192.168.15.37/stream") }
 
     fun saveAll() {
         prefs.edit()
@@ -315,6 +318,7 @@ fun SettingsScreen(onBack: () -> Unit) {
             .putString("pid_alt_rate_d", pidAltRateD)
             .putString("wifi_ssid", wifiSsid)
             .putString("wifi_pass", wifiPass)
+            .putString("stream_url", streamUrl)
             .apply()
         Toast.makeText(ctx, "Configurações salvas", Toast.LENGTH_SHORT).show()
     }
@@ -377,7 +381,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                             .padding(vertical = 12.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Text("Credenciais", style = MaterialTheme.typography.titleMedium)
+                        Text("Credenciais Wi-Fi", style = MaterialTheme.typography.titleMedium)
                         OutlinedTextField(
                             value = wifiSsid, onValueChange = { wifiSsid = it },
                             label = { Text("Rede (SSID)") }, singleLine = true,
@@ -389,6 +393,16 @@ fun SettingsScreen(onBack: () -> Unit) {
                             visualTransformation = PasswordVisualTransformation(),
                             modifier = Modifier.fillMaxWidth()
                         )
+
+                        Spacer(Modifier.height(16.dp))
+
+                        Text("Stream de Vídeo", style = MaterialTheme.typography.titleMedium)
+                        OutlinedTextField(
+                            value = streamUrl, onValueChange = { streamUrl = it },
+                            label = { Text("URL do Stream MJPEG") }, singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
                         Spacer(Modifier.height(80.dp))
                     }
                 }
